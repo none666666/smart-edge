@@ -29,10 +29,10 @@ TOP_SIGNALS         = 25      # how many signals to print
 # wallet track-record bars (a wallet qualifies via OVERALL or any CATEGORY)
 WALLET_LOOKBACK_DAYS = 365
 MAX_MARKETS_PER_WALLET = 100000  # effectively no cap (full accuracy)
-MIN_N_MARKETS        = 4      # overall resolved markets needed
-MIN_SKILL_Z          = 1.5    # overall skill bar
-MIN_CAT_N            = 3      # resolved markets in a category to call it a specialty
-MIN_CAT_Z            = 1.5    # per-category skill bar (SPECIALIST edge)
+MIN_N_MARKETS        = 3      # overall resolved markets needed   [LOOSENED]
+MIN_SKILL_Z          = 1.0    # overall skill bar                 [LOOSENED]
+MIN_CAT_N            = 2      # resolved markets in a category to call it a specialty [LOOSENED]
+MIN_CAT_Z            = 1.0    # per-category skill bar (SPECIALIST edge) [LOOSENED]
 EARLY_MAX_PRICE      = 0.55   # "cheap / early" entry threshold (TIMING)
 MAX_SIGNAL_PRICE     = 0.90   # ignore near-certain bets (no profit left)
 
@@ -46,6 +46,8 @@ MIN_FEASIBLE_USD = 300.0      # need at least this much takeable size in band
 
 # leaderboard seed (UNCROWDED edge — we mark who is already crowded)
 LEADERBOARD_LIMIT = 200
+USE_LB_SEED       = True   # also follow top leaderboard (proven) wallets into live markets
+LB_SEED_WALLETS   = 60     # how many top leaderboard wallets to seed
 
 # holders (direct smart-money per live market, no full trade scan)
 USE_HOLDERS        = False   # holders disabled: trade-only signals (fresh entries)
@@ -212,6 +214,7 @@ def profile_wallet(wallet):
         }
     prof = {
         "wallet": wallet, "n_markets": o["n"],
+        "n_trades": len(trades), "markets_seen": len(by_mkt),
         "hit_rate": round(o["wins"] / o["n"], 3) if o["n"] else 0.0,
         "skill_z": round(_z(o["wins"], o["sum_p"], o["var"]), 3) if o["n"] else 0.0,
         "early_ratio": round(o["early"] / max(o["wins"], 1), 3),
@@ -398,8 +401,19 @@ def profit_metrics(bet, prof, consensus_n):
     return payout, round(upside, 1), round(est_p, 3), round(ev, 1)
 
 # ============================ MAIN ============================
+CSV_HEADER = ["score", "tier", "wallet", "source", "crowded", "category", "market", "outcomeIndex",
+              "price", "notional", "payout_mult", "upside_pct", "est_win_prob", "ev_pct",
+              "skill_z", "hit_rate", "roi", "n_markets",
+              "consensus_wallets", "feasible_usd", "basis", "reasons"]
+
+def write_empty_csv():
+    """Always leave a CSV behind (header only) so artifact upload never fails."""
+    with open("smart_edge_signals.csv", "w", newline="") as f:
+        csv.writer(f).writerow(CSV_HEADER)
+
 def main():
     print("=== SMART-EDGE SCANNER (timing + specialist + consensus + uncrowded + feasible) ===")
+    write_empty_csv()  # placeholder; overwritten at the end if signals are found
     leaderboard = fetch_leaderboard()
     print("leaderboard seed wallets: " + str(len(leaderboard)) + ("" if leaderboard else " (none - everyone treated as uncrowded)"))
     markets = fetch_live_markets(N_LIVE_MARKETS)
@@ -453,6 +467,33 @@ def main():
             if i % 10 == 0 or i == len(markets):
                 print("  holders scanned " + str(i) + "/" + str(len(markets)) + " | holder rows added: " + str(holder_count))
 
+    # ---- LEADERBOARD SEED: follow proven wallets into the live markets ----
+    if USE_LB_SEED and leaderboard:
+        live_conds = {mk["cond"]: mk for mk in markets}
+        seeds = list(leaderboard.keys())[:LB_SEED_WALLETS]
+        seed_added = 0
+        for idx, w in enumerate(seeds, 1):
+            for t in fetch_wallet_trades(w, max_pages=2):
+                if (t.get("side") or "").upper() != "BUY": continue
+                cond = t.get("conditionId") or t.get("market")
+                if cond not in live_conds: continue
+                try:
+                    price = float(t.get("price")); size = float(t.get("size")); oi = int(t.get("outcomeIndex"))
+                except Exception:
+                    continue
+                if price > MAX_SIGNAL_PRICE: continue
+                notional = size * price
+                if notional < MIN_LIVE_NOTIONAL: continue
+                mk = live_conds[cond]
+                live_by_wallet.setdefault(w, []).append({
+                    "cond": cond, "title": mk["question"], "cat": mk["category"],
+                    "oi": oi, "price": round(price, 3), "notional": round(notional, 2),
+                    "token": t.get("asset") or "", "ts": tstamp(t), "source": "lb_seed",
+                })
+                seed_added += 1
+            if idx % 10 == 0 or idx == len(seeds):
+                print("  leaderboard-seed scanned " + str(idx) + "/" + str(len(seeds)) + " | seeded rows: " + str(seed_added), flush=True)
+
     if not live_by_wallet:
         print("No fresh live bets / holders above $" + str(int(MIN_LIVE_NOTIONAL)) + ". Lower MIN_LIVE_NOTIONAL."); return
 
@@ -463,8 +504,9 @@ def main():
         print("  [" + str(j) + "/" + str(len(ranked)) + "] profiling " + w + " ...", flush=True)
         prof = profile_wallet(w)
         prof["crowded"] = w in leaderboard
-        print("      -> " + str(prof["n_markets"]) + " resolved mkts | skill z="
-              + str(prof["skill_z"]) + " hit=" + str(prof["hit_rate"])
+        print("      -> trades=" + str(prof["n_trades"]) + " mkts_seen=" + str(prof["markets_seen"])
+              + " resolved=" + str(prof["n_markets"]) + " | z=" + str(prof["skill_z"])
+              + " hit=" + str(prof["hit_rate"])
               + (" | QUALIFIES" if wallet_qualifies(prof) else ""), flush=True)
         if wallet_qualifies(prof):
             # dedup same (market, outcome): prefer trade (has timing) over holder
