@@ -189,9 +189,11 @@ def profile_wallet(wallet):
     # overall + per category accumulators
     o = {"n": 0, "wins": 0, "sum_p": 0.0, "var": 0.0, "cost": 0.0, "pnl": 0.0, "early": 0}
     cats = defaultdict(lambda: {"n": 0, "wins": 0, "sum_p": 0.0, "var": 0.0, "cost": 0.0, "pnl": 0.0})
+    n_fetched = 0  # markets whose info came back from the API (question present)
     for cond in conds:
         outs = by_mkt[cond]
         info = market_info(cond)
+        if info["question"]: n_fetched += 1
         if not info["resolved"] or info["win"] is None: continue
         oi = max(outs, key=lambda k: outs[k]["size"]); d = outs[oi]
         if d["size"] <= 0 or d["cost"] <= 0: continue
@@ -214,7 +216,7 @@ def profile_wallet(wallet):
         }
     prof = {
         "wallet": wallet, "n_markets": o["n"],
-        "n_trades": len(trades), "markets_seen": len(by_mkt),
+        "n_trades": len(trades), "markets_seen": len(by_mkt), "mkts_fetched": n_fetched,
         "hit_rate": round(o["wins"] / o["n"], 3) if o["n"] else 0.0,
         "skill_z": round(_z(o["wins"], o["sum_p"], o["var"]), 3) if o["n"] else 0.0,
         "early_ratio": round(o["early"] / max(o["wins"], 1), 3),
@@ -505,6 +507,7 @@ def main():
         prof = profile_wallet(w)
         prof["crowded"] = w in leaderboard
         print("      -> trades=" + str(prof["n_trades"]) + " mkts_seen=" + str(prof["markets_seen"])
+              + " fetched=" + str(prof.get("mkts_fetched", 0))
               + " resolved=" + str(prof["n_markets"]) + " | z=" + str(prof["skill_z"])
               + " hit=" + str(prof["hit_rate"])
               + (" | QUALIFIES" if wallet_qualifies(prof) else ""), flush=True)
