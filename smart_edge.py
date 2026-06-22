@@ -46,8 +46,9 @@ MIN_FEASIBLE_USD = 300.0      # need at least this much takeable size in band
 
 # leaderboard seed (UNCROWDED edge — we mark who is already crowded)
 LEADERBOARD_LIMIT = 200
-USE_LB_SEED       = True   # also follow top leaderboard (proven) wallets into live markets
+USE_LB_SEED       = True   # follow top leaderboard (proven) wallets into ANY open market
 LB_SEED_WALLETS   = 60     # how many top leaderboard wallets to seed
+SEED_LOOKBACK_DAYS = 30    # how recent a proven wallet's open-market BUY must be
 
 # holders (direct smart-money per live market, no full trade scan)
 USE_HOLDERS        = False   # holders disabled: trade-only signals (fresh entries)
@@ -469,16 +470,18 @@ def main():
             if i % 10 == 0 or i == len(markets):
                 print("  holders scanned " + str(i) + "/" + str(len(markets)) + " | holder rows added: " + str(holder_count))
 
-    # ---- LEADERBOARD SEED: follow proven wallets into the live markets ----
+    # ---- LEADERBOARD SEED: follow proven wallets into ANY open market they just entered ----
     if USE_LB_SEED and leaderboard:
-        live_conds = {mk["cond"]: mk for mk in markets}
+        seed_cut = time.time() - SEED_LOOKBACK_DAYS * DAY
         seeds = list(leaderboard.keys())[:LB_SEED_WALLETS]
         seed_added = 0
         for idx, w in enumerate(seeds, 1):
+            best_by_mkt = {}
             for t in fetch_wallet_trades(w, max_pages=2):
                 if (t.get("side") or "").upper() != "BUY": continue
+                if tstamp(t) < seed_cut: continue
                 cond = t.get("conditionId") or t.get("market")
-                if cond not in live_conds: continue
+                if not cond: continue
                 try:
                     price = float(t.get("price")); size = float(t.get("size")); oi = int(t.get("outcomeIndex"))
                 except Exception:
@@ -486,15 +489,21 @@ def main():
                 if price > MAX_SIGNAL_PRICE: continue
                 notional = size * price
                 if notional < MIN_LIVE_NOTIONAL: continue
-                mk = live_conds[cond]
-                live_by_wallet.setdefault(w, []).append({
-                    "cond": cond, "title": mk["question"], "cat": mk["category"],
-                    "oi": oi, "price": round(price, 3), "notional": round(notional, 2),
-                    "token": t.get("asset") or "", "ts": tstamp(t), "source": "lb_seed",
-                })
+                info = market_info(cond)
+                if info["resolved"] or info["win"] is not None: continue   # only still-OPEN markets
+                k = (cond, oi)
+                cur = best_by_mkt.get(k)
+                if cur is None or notional > cur["notional"]:
+                    best_by_mkt[k] = {
+                        "cond": cond, "title": info["question"] or cond, "cat": info["category"],
+                        "oi": oi, "price": round(price, 3), "notional": round(notional, 2),
+                        "token": t.get("asset") or "", "ts": tstamp(t), "source": "lb_seed",
+                    }
+            for b in best_by_mkt.values():
+                live_by_wallet.setdefault(w, []).append(b)
                 seed_added += 1
             if idx % 10 == 0 or idx == len(seeds):
-                print("  leaderboard-seed scanned " + str(idx) + "/" + str(len(seeds)) + " | seeded rows: " + str(seed_added), flush=True)
+                print("  leaderboard-seed scanned " + str(idx) + "/" + str(len(seeds)) + " | live bets found: " + str(seed_added), flush=True)
 
     if not live_by_wallet:
         print("No fresh live bets / holders above $" + str(int(MIN_LIVE_NOTIONAL)) + ". Lower MIN_LIVE_NOTIONAL."); return
