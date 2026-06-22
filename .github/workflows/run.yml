@@ -1,11 +1,11 @@
 name: Smart Edge Scanner
 
 on:
-  workflow_dispatch:          # اجرای دستی با دکمه
+  workflow_dispatch:
   push:
-    branches: [ main ]        # همین که فایل‌ها را بالا بدهی، فوراً یک‌بار اجرا می‌شود
+    branches: [ main ]
   schedule:
-    - cron: "0 */6 * * *"     # و بعد هر ۶ ساعت یک‌بار (UTC)
+    - cron: "0 */6 * * *"
 
 jobs:
   scan:
@@ -16,8 +16,12 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -r requirements.txt
-      - run: python smart_edge.py
+      - run: python smart_edge.py | tee run.log
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: smart-edge-signals
-          path: smart_edge_signals.csv
+          name: smart-edge-output
+          path: |
+            run.log
+            smart_edge_signals.csv
+          if-no-files-found: warn
